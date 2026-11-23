@@ -74,7 +74,7 @@ def sync_activities(conn, athlete_id: int, max_pages: int = 10) -> int:
     """Backfill the athlete's activities, 200 per page. Returns how many were stored."""
     token = valid_access_token(conn, athlete_id)
     stored = 0
-    with httpx.Client(base_url=config.STRAVA_API, headers={"Authorization": f"Bearer {token}"}) as client:
+    with httpx.Client(base_url=config.STRAVA_API, headers={"Authorization": f"Bearer {token}"}, timeout=30.0) as client:
         for page in range(1, max_pages + 1):
             resp = client.get("/athlete/activities", params={"per_page": 200, "page": page})
             resp.raise_for_status()

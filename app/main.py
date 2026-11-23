@@ -53,6 +53,8 @@ def sync(athlete_id: int):
         raise HTTPException(404, str(e))
     except httpx.HTTPStatusError as e:
         raise HTTPException(502, f"Strava API error: {e.response.status_code}")
+    except httpx.TimeoutException:
+        raise HTTPException(504, "Strava took too long to respond; try again")
     finally:
         conn.close()
     return {"activities_stored": stored}
