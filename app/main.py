@@ -70,6 +70,7 @@ def recommendations(
     max_elev_m: float | None = Query(None, ge=0),
     max_start_km: float = Query(10.0, gt=0, le=100),
     limit: int = Query(5, ge=1, le=20),
+    include_polyline: bool = False,
 ):
     conn = db.connect()
     if db.get_athlete(conn, athlete_id) is None:
@@ -91,7 +92,7 @@ def recommendations(
             "loop": r.loop,
             "score": r.score,
             "why": r.why,
-            "polyline": r.candidate.polyline,
+            **({"polyline": r.candidate.polyline} if include_polyline else {}),
         }
         for r in recs
     ]
