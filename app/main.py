@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import db, scoring, strava
+from app.scoring import KM_PER_MI, M_PER_FT
 
 
 @asynccontextmanager
@@ -89,19 +90,19 @@ def recommendations(
     athlete_id: int,
     lat: float = Query(..., ge=-90, le=90),
     lng: float = Query(..., ge=-180, le=180),
-    distance_km: float = Query(..., gt=0, le=500),
+    distance_mi: float = Query(..., gt=0, le=300, description="Target distance in miles"),
     sport: Literal["ride", "run", "walk"] = "ride",
-    max_elev_m: float | None = Query(None, ge=0),
-    max_start_km: float = Query(10.0, gt=0, le=100),
+    max_elev_ft: float | None = Query(None, ge=0, le=50_000, description="Most climbing you want, in feet"),
+    max_start_mi: float = Query(6.0, gt=0, le=60, description="Furthest a route may start from you, in miles"),
     limit: int = Query(5, ge=1, le=20),
     include_polyline: bool = False,
-    units: Literal["metric", "imperial"] = "metric",
     w_distance: float | None = Query(None, ge=0, le=100, description="Importance of matching the target distance"),
     w_proximity: float | None = Query(None, ge=0, le=100, description="Importance of starting close by"),
-    w_elevation: float | None = Query(None, ge=0, le=100, description="Importance of staying under max_elev_m"),
+    w_elevation: float | None = Query(None, ge=0, le=100, description="Importance of staying under max_elev_ft"),
     w_novelty: float | None = Query(None, ge=0, le=100, description="Importance of routes not done lately"),
 ):
-    """Numbers in the response are always km and m; `units` only changes the wording of `why`."""
+    """The API speaks miles and feet. Strava data and the scoring maths are metric,
+    so values are converted here on the way in and on the way out."""
     conn = db.connect()
     if db.get_athlete(conn, athlete_id) is None:
         conn.close()
@@ -116,17 +117,22 @@ def recommendations(
     except ValueError as e:
         raise HTTPException(422, str(e))
 
-    recs = scoring.recommend(routes_for(athlete_id, sport, rows), lat, lng, distance_km,
-                             max_elev_m=max_elev_m, max_start_km=max_start_km, limit=limit, units=units, weights=weights)
+    recs = scoring.recommend(
+        routes_for(athlete_id, sport, rows), lat, lng,
+        target_km=distance_mi * KM_PER_MI,
+        max_elev_m=None if max_elev_ft is None else max_elev_ft * M_PER_FT,
+        max_start_km=max_start_mi * KM_PER_MI,
+        limit=limit, units="imperial", weights=weights,
+    )
     return [
         {
             "name": r.candidate.name,
             "strava_activity_url": f"https://www.strava.com/activities/{r.candidate.activity_id}",
             "sport_type": r.candidate.sport_type,
-            "distance_km": round(r.candidate.distance_km, 1),
-            "elev_gain_m": round(r.candidate.elev_gain_m),
-            "start_km_away": r.start_km_away,
-            "loop": r.loop,
+            "distance_mi": round(r.candidate.distance_km / KM_PER_MI, 1),
+            "elev_gain_ft": round(r.candidate.elev_gain_m / M_PER_FT),
+            "start_mi_away": round(r.start_km_away / KM_PER_MI, 2),  # already rounded to 0.25 mi
+            "route_type": r.route_type,  # loop, out_and_back, point_to_point, or null without GPS
             "score": r.score,
             "why": r.why,
             # Only ever the trimmed path: the real start and end never leave the server.

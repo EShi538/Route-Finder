@@ -50,9 +50,9 @@ def candidate_row(id, pts, days_ago=10):
             "polyline": polyline.encode(pts), "start_date": (NOW - timedelta(days=days_ago)).isoformat()}
 
 
-def test_loop_detection_still_uses_full_path():
+def test_route_type_still_uses_full_path():
     [rec] = scoring.recommend(scoring.group_routes([candidate_row(1, LOOP)]), *HOME, 10, now=NOW)
-    assert rec.loop is True
+    assert rec.route_type == "loop"
 
 
 def test_distance_is_rounded_and_measured_from_trimmed_start():
@@ -84,7 +84,7 @@ def client(tmp_path, monkeypatch):
 
 def test_api_polyline_never_comes_near_home(client):
     body = client.get("/athletes/42/recommendations", params={
-        "lat": HOME[0], "lng": HOME[1], "distance_km": 10, "include_polyline": "true"}).json()
+        "lat": HOME[0], "lng": HOME[1], "distance_mi": 6.2, "include_polyline": "true"}).json()
     pts = polyline.decode(body[0]["polyline"])
     assert pts
     assert nearest_m(pts, HOME) >= TRIM_MIN_M - 5

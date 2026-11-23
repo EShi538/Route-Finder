@@ -84,7 +84,7 @@ def snap(lat: float, lng: float, step_deg: float = SNAP_DEG) -> tuple[float, flo
 
 
 def is_loop(points: list[tuple[float, float]], tolerance_km: float = 0.5) -> bool:
-    """True if the route ends within tolerance_km of where it started."""
+    """True if the route ends within tolerance_km of where it started (a loop or an out-and-back)."""
     if len(points) < 2:
         return False
     (lat1, lng1), (lat2, lng2) = points[0], points[-1]
@@ -166,3 +166,86 @@ def same_shape(a: Shape, b: Shape, min_overlap: float = MIN_OVERLAP) -> bool:
     """True if each route lies mostly along the other (symmetric, so a short route
     that is just the first half of a long one does NOT match)."""
     return a.overlap(b) >= min_overlap and b.overlap(a) >= min_overlap
+
+
+# ---------------------------------------------------------------------------
+# Route type
+#
+# Ending where you started makes a route either a loop or an out-and-back.
+# An out-and-back's second half covers the same ground as its first half, in
+# reverse. Two checks:
+#   * overlap: the halves share most of their grid cells (tolerates GPS noise,
+#     the other side of the road and small detours);
+#   * direction: walking the second half, the matching spots on the first half
+#     go backwards. This separates an out-and-back from two laps of one loop,
+#     which also overlap but repeat in the same direction.
+# ---------------------------------------------------------------------------
+
+LOOP = "loop"
+OUT_AND_BACK = "out_and_back"
+POINT_TO_POINT = "point_to_point"
+
+OUT_BACK_OVERLAP = 0.75   # share of each half that must lie on the other
+MATCH_KM = CELL_M * 2 / 1000
+
+
+def split_by_distance(points: list[tuple[float, float]]) -> tuple[list, list]:
+    """Cut a path in two at the halfway point by distance (the turnaround of an out-and-back)."""
+    seg = [haversine_km(*a, *b) for a, b in zip(points, points[1:])]
+    half, walked = sum(seg) / 2, 0.0
+    for i, d in enumerate(seg):
+        if walked + d >= half:
+            t = (half - walked) / d if d else 0.0
+            a, b = points[i], points[i + 1]
+            mid = (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+            return points[:i + 1] + [mid], [mid] + points[i + 1:]
+        walked += d
+    return points, []
+
+
+def resample(points: list[tuple[float, float]], n: int) -> list[tuple[float, float]]:
+    """n+1 points evenly spaced by distance along the path."""
+    seg = [haversine_km(*a, *b) for a, b in zip(points, points[1:])]
+    total, out, i, walked = sum(seg), [], 0, 0.0
+    for k in range(n + 1):
+        target = total * k / n
+        while i < len(seg) - 1 and walked + seg[i] < target:
+            walked += seg[i]
+            i += 1
+        t = (target - walked) / seg[i] if seg[i] else 0.0
+        a, b = points[i], points[i + 1]
+        out.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+    return out
+
+
+def retraces_in_reverse(first: list, second: list, n: int = 60) -> bool:
+    """True if moving forward along `second` means moving backward along `first`."""
+    a, b = resample(first, n), resample(second, n)
+    matched = []
+    for j, p in enumerate(b):
+        dist, i = min((haversine_km(*p, *q), i) for i, q in enumerate(a))
+        if dist <= MATCH_KM:
+            matched.append((j, i))
+    if len(matched) < n // 3:
+        return False
+    # Correlation between position on the second half and the matching position on the first.
+    js, is_ = [m[0] for m in matched], [m[1] for m in matched]
+    mj, mi = sum(js) / len(js), sum(is_) / len(is_)
+    cov = sum((j - mj) * (i - mi) for j, i in matched)
+    var = math.sqrt(sum((j - mj) ** 2 for j in js) * sum((i - mi) ** 2 for i in is_))
+    return var > 0 and cov / var < -0.5
+
+
+def route_type(points: list[tuple[float, float]]) -> str | None:
+    """loop, out_and_back or point_to_point; None when there is no GPS path."""
+    if len(points) < 2:
+        return None
+    if not is_loop(points):
+        return POINT_TO_POINT
+    first, second = split_by_distance(points)
+    if len(first) < 2 or len(second) < 2:
+        return LOOP
+    a, b = Shape(first, points[0][0]), Shape(second, points[0][0])
+    if min(a.overlap(b), b.overlap(a)) >= OUT_BACK_OVERLAP and retraces_in_reverse(first, second):
+        return OUT_AND_BACK
+    return LOOP

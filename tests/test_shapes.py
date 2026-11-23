@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import polyline
 
 from app import scoring
-from app.geo import Shape, same_shape
+from app.geo import Shape, route_type, same_shape
 
 HOME = (47.6600, -122.3000)
 M_PER_DEG_LAT = 111_320
@@ -111,3 +111,43 @@ def test_activities_without_gps_fall_back_to_start_and_distance():
     a, b = row(1, path(LOOP), 10), row(2, path(LOOP), 5)
     a["polyline"] = b["polyline"] = None
     assert len(scoring.group_routes([a, b])) == 1
+
+
+# --- route type -------------------------------------------------------------
+
+OUT = [(0, 0), (2000, 500), (4000, 0), (6000, 1500), (8000, 1000)]   # a wiggly 8 km road east
+
+
+def test_loop_is_loop():
+    assert route_type(path(LOOP)) == "loop"
+
+
+def test_out_and_back_is_detected():
+    assert route_type(path(OUT + OUT[-2::-1])) == "out_and_back"
+
+
+def test_out_and_back_with_gps_noise_and_other_side_of_road():
+    there = path(OUT, jitter_m=15, seed=1)
+    back = path([(e, n + 20) for e, n in OUT[::-1]], jitter_m=15, seed=2)  # 20 m over, like the other lane
+    assert route_type(there + back) == "out_and_back"
+
+
+def test_out_and_back_with_small_detour_on_the_way_back():
+    back = OUT[::-1][:2] + [(5000, 1600)] + OUT[::-1][2:]   # a short detour off the road
+    assert route_type(path(OUT + back)) == "out_and_back"
+
+
+def test_two_laps_of_a_loop_is_a_loop_not_out_and_back():
+    small = box(2000, 1000)
+    assert route_type(path(small + small[1:])) == "loop"
+
+
+def test_lollipop_with_short_stem_is_a_loop():
+    stem = [(0, 0), (1000, 0)]
+    loop = [(1000, 0), (1000, 4000), (5000, 4000), (5000, 0), (1000, 0)]
+    assert route_type(path(stem + loop[1:] + stem[::-1])) == "loop"
+
+
+def test_point_to_point_and_no_gps():
+    assert route_type(path(OUT)) == "point_to_point"
+    assert route_type([]) is None

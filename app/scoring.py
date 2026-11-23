@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from app.geo import Shape, decode, encode, haversine_km, is_loop, same_shape, snap, trim_ends
+from app.geo import Shape, decode, encode, haversine_km, route_type, same_shape, snap, trim_ends
 
 SPORTS = {
     "ride": {"Ride", "GravelRide", "MountainBikeRide", "EBikeRide"},
@@ -49,8 +49,7 @@ class Units:
         self.round_km = 0.25 * KM_PER_MI if self.imperial else DISTANCE_ROUND_KM
 
     def dist(self, km: float) -> str:
-        # Converts the same 1-decimal km the API returns, so the text matches the page's cards.
-        km = round(km, 1)
+        # Rounded the same way as the API's numeric fields, so the text matches the cards.
         return f"{km / KM_PER_MI:.1f} mi" if self.imperial else f"{km:.1f} km"
 
     def away(self, km: float) -> str:
@@ -63,7 +62,6 @@ class Units:
         return f"{round(value, 1):g} {unit}"
 
     def elev(self, m: float) -> str:
-        m = round(m)
         return f"{m / M_PER_FT:,.0f} ft" if self.imperial else f"{m:,.0f} m"
 
 
@@ -80,7 +78,7 @@ class Candidate:
     last_done: datetime
     times_done: int = 1
     shape: Shape | None = field(default=None, repr=False, compare=False)
-    loop: bool = False
+    route_type: str | None = None  # loop / out_and_back / point_to_point; None without GPS
     # What may leave the server: the path with both ends trimmed off, and the
     # point we measure "km away" from (first visible point, or a snapped start).
     public_polyline: str | None = None
@@ -88,7 +86,7 @@ class Candidate:
 
     def __post_init__(self):
         points = decode(self.polyline)
-        self.loop = is_loop(points)
+        self.route_type = route_type(points)  # from the full path, before trimming
         visible = trim_ends(points, self.activity_id)
         self.public_polyline = encode(visible)
         self.public_start = visible[0] if visible else snap(self.start_lat, self.start_lng)
@@ -99,7 +97,7 @@ class Recommendation:
     candidate: Candidate
     score: float
     start_km_away: float
-    loop: bool
+    route_type: str | None
     why: list[str] = field(default_factory=list)
 
 
@@ -208,7 +206,7 @@ def recommend(
         days = int((now - c.last_done).days)
         why.append(f"last done {days} days ago" + (f", {c.times_done} times total" if c.times_done > 1 else ""))
 
-        results.append(Recommendation(c, round(score, 3), round(shown_km, 3), c.loop, why))
+        results.append(Recommendation(c, round(score, 3), round(shown_km, 3), c.route_type, why))
 
     results.sort(key=lambda r: r.score, reverse=True)
     return results[:limit]

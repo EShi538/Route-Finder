@@ -72,15 +72,15 @@
 <main>
   <aside>
     <form id="form">
-      <label class="full">Athlete ID <input id="athlete" required inputmode="numeric" placeholder="from /auth/login"></label>
+      <label class="full">Athlete ID <input id="athlete" required inputmode="numeric" pattern="[0-9]+" title="Your numeric Strava athlete ID" placeholder="from /auth/login"></label>
       <label>Sport
         <select id="sport"><option value="ride">Ride</option><option value="run">Run</option><option value="walk">Walk / Hike</option></select>
       </label>
-      <label>Distance (mi) <input id="distance" type="number" min="0.5" step="any" value="25" required></label>
-      <label>Max climbing (ft) <input id="elev" type="number" min="0" step="any" placeholder="any"></label>
-      <label>Max start (mi) <input id="maxstart" type="number" min="0.1" step="any" value="6"></label>
-      <label>Latitude <input id="lat" type="number" step="any" value="47.66" required></label>
-      <label>Longitude <input id="lng" type="number" step="any" value="-122.30" required></label>
+      <label>Distance (mi) <input id="distance" type="number" min="0.5" max="300" step="any" value="25" required></label>
+      <label>Max climbing (ft) <input id="elev" type="number" min="0" max="50000" step="any" placeholder="any"></label>
+      <label>Max start (mi) <input id="maxstart" type="number" min="0.1" max="60" step="any" value="6" required></label>
+      <label>Latitude <input id="lat" type="number" min="-90" max="90" step="any" value="47.66" required></label>
+      <label>Longitude <input id="lng" type="number" min="-180" max="180" step="any" value="-122.30" required></label>
       <details class="prio" id="prio">
         <summary>Priorities</summary>
         <div class="prio-list" id="prio-list"></div>
@@ -118,12 +118,6 @@ function decodePolyline(str) {
 }
 
 const $ = (id) => document.getElementById(id);
-
-// The page works in miles and feet; the API always takes and returns km and m.
-const KM_PER_MI = 1.609344, M_PER_FT = 0.3048;
-const mi = (km) => (km / KM_PER_MI).toFixed(1);
-const ft = (m) => Math.round(m / M_PER_FT).toLocaleString("en-US");
-const miAway = (km) => +(km / KM_PER_MI).toFixed(2);  // server rounds to 0.25 mi: 0, 0.25, 0.5…
 const map = L.map("map").setView([47.66, -122.30], 12);
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19, attribution: "&copy; OpenStreetMap contributors",
@@ -132,6 +126,7 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
 let layers = [];
 let startMarker = null;
 
+const ROUTE_TYPES = { loop: "Loop", out_and_back: "Out and back", point_to_point: "Point to point" };
 const ROUTE_STYLE = { color: "#8a8781", weight: 3, opacity: 0.55 };
 const ACTIVE_STYLE = { color: "#fc5200", weight: 5, opacity: 1 };
 
@@ -177,10 +172,10 @@ function render(routes, lat, lng) {
         <div class="score">${Math.round(r.score * 100)}</div>
       </div>
       <div class="stats">
-        <span><b>${mi(r.distance_km)}</b> mi</span>
-        <span><b>${ft(r.elev_gain_m)}</b> ft up</span>
-        <span><b>${miAway(r.start_km_away)}</b> mi away</span>
-        <span>${r.loop ? "Loop" : "Point to point"}</span>
+        <span><b>${r.distance_mi.toFixed(1)}</b> mi</span>
+        <span><b>${r.elev_gain_ft.toLocaleString("en-US")}</b> ft up</span>
+        <span><b>${r.start_mi_away}</b> mi away</span>
+        ${ROUTE_TYPES[r.route_type] ? `<span>${ROUTE_TYPES[r.route_type]}</span>` : ""}
       </div>
       <div class="bar"><i style="width:${Math.round(r.score * 100)}%"></i></div>
       <div class="why">${r.why.map((w) => `<span>${escapeHtml(w)}</span>`).join("")}</div>`;
@@ -257,12 +252,11 @@ async function search(e) {
   try { localStorage.setItem("athleteId", id); } catch {}
 
   const params = new URLSearchParams({
-    lat, lng, sport: $("sport").value, units: "imperial",
-    distance_km: $("distance").value * KM_PER_MI,
-    max_start_km: $("maxstart").value * KM_PER_MI,
+    lat, lng, sport: $("sport").value,
+    distance_mi: $("distance").value, max_start_mi: $("maxstart").value,
     include_polyline: "true", limit: "8",
   });
-  if ($("elev").value) params.set("max_elev_m", $("elev").value * M_PER_FT);
+  if ($("elev").value) params.set("max_elev_ft", $("elev").value);
   FACTORS.forEach((f) => params.set(`w_${f.key}`, weights[f.key]));
 
   $("go").disabled = true;
