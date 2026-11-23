@@ -29,6 +29,11 @@
   button.primary { background: var(--accent); color: #fff; flex: 1; }
   button.ghost { background: var(--accent-soft); color: var(--accent); }
   button:disabled { opacity: 0.6; cursor: wait; }
+  #account { padding: 12px 20px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 14px; min-height: 58px; }
+  #account .who { flex: 1; min-width: 0; color: var(--muted); }
+  #account .who b { color: var(--ink); font-weight: 600; }
+  #account button, #account a.connect { padding: 7px 12px; font-size: 13px; }
+  a.connect { background: var(--accent); color: #fff; border-radius: 8px; font-weight: 600; text-decoration: none; }
   #status { padding: 14px 20px; color: var(--muted); font-size: 14px; }
   #status a { color: var(--accent); }
   ol { list-style: none; margin: 0; padding: 0 12px 20px; }
@@ -71,8 +76,8 @@
 <header><h1>Route Finder</h1><span>Route recommendations from your Strava history</span></header>
 <main>
   <aside>
+    <div id="account" aria-live="polite"><span class="who">Checking sign-in…</span></div>
     <form id="form">
-      <label class="full">Athlete ID <input id="athlete" required inputmode="numeric" pattern="[0-9]+" title="Your numeric Strava athlete ID" placeholder="from /auth/login"></label>
       <label>Sport
         <select id="sport"><option value="ride">Ride</option><option value="run">Run</option><option value="walk">Walk / Hike</option></select>
       </label>
@@ -90,7 +95,7 @@
         <button type="submit" class="primary" id="go">Find routes</button>
       </div>
     </form>
-    <div id="status">Enter your athlete ID and click Find routes. Not connected yet? <a href="/auth/login">Connect Strava</a>.</div>
+    <div id="status"></div>
     <ol id="results"></ol>
   </aside>
   <div id="map"></div>
@@ -247,9 +252,8 @@ async function search(e) {
     $("status").textContent = "Turn at least one priority above 0.";
     return;
   }
-  const id = $("athlete").value.trim();
+  if (!account) { showSignedOut(); return; }
   const lat = parseFloat($("lat").value), lng = parseFloat($("lng").value);
-  try { localStorage.setItem("athleteId", id); } catch {}
 
   const params = new URLSearchParams({
     lat, lng, sport: $("sport").value,
@@ -262,10 +266,10 @@ async function search(e) {
   $("go").disabled = true;
   $("status").textContent = "Finding routes…";
   try {
-    const res = await fetch(`/athletes/${encodeURIComponent(id)}/recommendations?${params}`);
+    const res = await fetch(`/me/recommendations?${params}`);
     const body = await res.json();
-    if (res.status === 404) {
-      $("status").innerHTML = 'That athlete hasn\'t connected Strava. <a href="/auth/login">Connect Strava</a>.';
+    if (res.status === 401) {
+      showSignedOut();
       render([], lat, lng);
     } else if (!res.ok) {
       const detail = Array.isArray(body.detail) ? body.detail.map((d) => `${d.loc.at(-1)}: ${d.msg}`).join("; ") : body.detail;
@@ -280,8 +284,65 @@ async function search(e) {
   } catch (err) {
     $("status").textContent = "Couldn't reach the server. Is uvicorn running?";
   } finally {
-    $("go").disabled = false;
+    $("go").disabled = !account;
   }
+}
+
+// --- Account: who is signed in, sync, log out --------------------------------
+let account = null;   // {athlete_id, name, activities} while signed in
+
+function showSignedOut() {
+  account = null;
+  $("go").disabled = true;
+  $("account").innerHTML = '<span class="who">Sign in to see routes from your Strava history.</span><a class="connect" href="/auth/login">Connect with Strava</a>';
+  $("status").textContent = "";
+}
+
+function showAccount() {
+  $("go").disabled = false;
+  const n = account.activities.toLocaleString("en-US");
+  $("account").innerHTML = `<span class="who"><b>${escapeHtml(account.name || "Signed in")}</b> · ${n} activities</span>
+    <button type="button" class="ghost" id="sync">Sync now</button>
+    <button type="button" class="ghost" id="logout">Log out</button>`;
+  $("sync").addEventListener("click", syncNow);
+  $("logout").addEventListener("click", logOut);
+}
+
+async function loadAccount() {
+  try {
+    const res = await fetch("/me");
+    if (!res.ok) return showSignedOut(), false;
+    account = await res.json();
+    showAccount();
+    return true;
+  } catch {
+    $("account").innerHTML = '<span class="who">Couldn\'t reach the server. Is uvicorn running?</span>';
+    return false;
+  }
+}
+
+async function syncNow() {
+  $("sync").disabled = true;
+  $("sync").textContent = "Syncing…";
+  $("status").textContent = "Importing activities from Strava…";
+  try {
+    const res = await fetch("/me/sync", { method: "POST" });
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 401) return showSignedOut();
+    $("status").textContent = res.ok
+      ? `Synced ${body.activities_stored.toLocaleString("en-US")} activities from Strava.`
+      : `Sync failed: ${body.detail || res.status}`;
+  } catch {
+    $("status").textContent = "Couldn't reach the server.";
+  }
+  await loadAccount();
+}
+
+async function logOut() {
+  await fetch("/auth/logout", { method: "POST" }).catch(() => {});
+  render([], parseFloat($("lat").value), parseFloat($("lng").value));
+  $("results").innerHTML = "";
+  showSignedOut();
 }
 
 $("form").addEventListener("submit", search);
@@ -298,11 +359,11 @@ $("locate").addEventListener("click", () => {
   );
 });
 
-try { const saved = localStorage.getItem("athleteId"); if (saved) $("athlete").value = saved; } catch {}
+try { localStorage.removeItem("athleteId"); } catch {}  // no longer used: sign-in replaced the ID box
 
-// Shareable links (distance and maxstart in miles, elev in feet): /?athlete=123&distance=25&sport=ride&lat=..&lng=.. fills the form and searches.
+// Shareable links (distance and maxstart in miles, elev in feet): /?distance=25&sport=ride&lat=..&lng=.. fills the form and searches.
 const q = new URLSearchParams(location.search);
-const fields = { athlete: "athlete", distance: "distance", sport: "sport", lat: "lat", lng: "lng", elev: "elev", maxstart: "maxstart" };
+const fields = { distance: "distance", sport: "sport", lat: "lat", lng: "lng", elev: "elev", maxstart: "maxstart" };
 for (const [param, id] of Object.entries(fields)) if (q.has(param)) $(id).value = q.get(param);
 // ...and w_distance=60&w_novelty=0 etc. set the priorities.
 FACTORS.forEach((f) => {
@@ -310,7 +371,18 @@ FACTORS.forEach((f) => {
   if (v >= 0 && v <= 100) { weights[f.key] = v; $(`w-${f.key}`).value = v; }
 });
 showShares();
-if (q.has("athlete")) $("form").requestSubmit();
+
+$("go").disabled = true;
+loadAccount().then(async (signedIn) => {
+  if (!signedIn) return;
+  if (account.activities === 0) {
+    await syncNow();                       // first visit after connecting: import right away
+  } else if (Object.keys(fields).some((p) => q.has(p))) {
+    $("form").requestSubmit();             // shareable link: search straight away
+  } else {
+    $("status").textContent = "Set a distance and click Find routes.";
+  }
+});
 </script>
 </body>
 </html>

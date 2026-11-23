@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from app import config, db, scoring
 from app.geo import TRIM_MAX_M, TRIM_MIN_M, haversine_km, path_length_m, trim_ends, trim_lengths_m
+from tests.conftest import sign_in
 from tests.test_shapes import HOME, box, path
 
 NOW = datetime(2026, 11, 23, tzinfo=timezone.utc)
@@ -79,11 +80,12 @@ def client(tmp_path, monkeypatch):
         db.upsert_activity(conn, {**candidate_row(1, LOOP, days_ago=30), "athlete_id": 42})
         conn.commit()
         conn.close()
+        sign_in(c, monkeypatch)
         yield c
 
 
 def test_api_polyline_never_comes_near_home(client):
-    body = client.get("/athletes/42/recommendations", params={
+    body = client.get("/me/recommendations", params={
         "lat": HOME[0], "lng": HOME[1], "distance_mi": 6.2, "include_polyline": "true"}).json()
     pts = polyline.decode(body[0]["polyline"])
     assert pts

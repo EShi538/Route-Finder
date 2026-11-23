@@ -10,8 +10,9 @@ from app import config, db
 SCOPES = "read,activity:read_all"
 
 
-def authorize_url() -> str:
+def authorize_url(state: str) -> str:
     return config.STRAVA_AUTH_URL + "?" + urlencode({
+        "state": state,
         "client_id": config.STRAVA_CLIENT_ID,
         "redirect_uri": config.REDIRECT_URI,
         "response_type": "code",

@@ -1,0 +1,30 @@
+# fly.toml app configuration file generated for route-finder on 2026-11-23T10:44:54-08:00
+#
+# See https://docs.fly.io/reference/configuration for information about how to use this file.
+#
+
+app = 'route-finder'
+primary_region = 'lax'
+
+[build]
+
+[env]
+  # SQLite lives on the volume below so it survives deploys and machine restarts.
+  DB_PATH = '/data/routes.db'
+
+[mounts]
+  source = 'data'
+  destination = '/data'
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1

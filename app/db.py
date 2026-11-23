@@ -87,3 +87,7 @@ def delete_athlete(conn, athlete_id: int) -> None:
     conn.execute("DELETE FROM activities WHERE athlete_id = ?", (athlete_id,))
     conn.execute("DELETE FROM athletes WHERE id = ?", (athlete_id,))
     conn.commit()
+
+
+def count_activities(conn, athlete_id: int) -> int:
+    return conn.execute("SELECT COUNT(*) FROM activities WHERE athlete_id = ?", (athlete_id,)).fetchone()[0]

@@ -4,12 +4,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import config, db
+from app import main
 from app.main import app
+from tests.conftest import sign_in
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "test.db"))
+    monkeypatch.setattr(main, "_route_cache", {})
     with TestClient(app) as c:
         conn = db.connect()
         db.save_athlete(conn, 42, "Test Athlete", "tok", "refresh", 9_999_999_999)
@@ -21,6 +24,7 @@ def client(tmp_path, monkeypatch):
         })
         conn.commit()
         conn.close()
+        sign_in(c, monkeypatch)
         yield c
 
 
@@ -29,7 +33,7 @@ def test_health(client):
 
 
 def test_recommendations_returns_route(client):
-    resp = client.get("/athletes/42/recommendations",
+    resp = client.get("/me/recommendations",
                       params={"lat": 47.66, "lng": -122.30, "distance_mi": 25})
     assert resp.status_code == 200
     body = resp.json()
@@ -37,10 +41,10 @@ def test_recommendations_returns_route(client):
     assert body[0]["strava_activity_url"].endswith("/activities/1")
 
 
-def test_recommendations_unknown_athlete(client):
-    resp = client.get("/athletes/7/recommendations",
-                      params={"lat": 47.66, "lng": -122.30, "distance_mi": 25})
-    assert resp.status_code == 404
+def test_recommendations_require_sign_in(client):
+    client.post("/auth/logout")
+    resp = client.get("/me/recommendations", params={"lat": 47.66, "lng": -122.30, "distance_mi": 25})
+    assert resp.status_code == 401
 
 
 @pytest.mark.parametrize("params", [
@@ -49,14 +53,14 @@ def test_recommendations_unknown_athlete(client):
     {"lat": 47, "lng": -122, "distance_mi": 25, "sport": "swim"},  # unsupported sport
 ])
 def test_recommendations_validates_input(client, params):
-    assert client.get("/athletes/42/recommendations", params=params).status_code == 422
+    assert client.get("/me/recommendations", params=params).status_code == 422
 
 
 def test_polyline_hidden_by_default(client):
     params = {"lat": 47.66, "lng": -122.30, "distance_mi": 25}
-    assert "polyline" not in client.get("/athletes/42/recommendations", params=params).json()[0]
+    assert "polyline" not in client.get("/me/recommendations", params=params).json()[0]
     params["include_polyline"] = "true"
-    assert "polyline" in client.get("/athletes/42/recommendations", params=params).json()[0]
+    assert "polyline" in client.get("/me/recommendations", params=params).json()[0]
 
 
 def test_home_page_served(client):
@@ -67,7 +71,7 @@ def test_home_page_served(client):
 
 def test_recommendations_use_miles_and_feet(client):
     params = {"lat": 47.66, "lng": -122.30, "distance_mi": 25, "max_elev_ft": 1500}
-    r = client.get("/athletes/42/recommendations", params=params).json()[0]
+    r = client.get("/me/recommendations", params=params).json()[0]
     # The fixture activity is 40 km with 300 m of climbing.
     assert r["distance_mi"] == 24.9
     assert r["elev_gain_ft"] == 984
@@ -77,23 +81,23 @@ def test_recommendations_use_miles_and_feet(client):
     assert not {"distance_km", "elev_gain_m", "start_km_away"} & r.keys()
     # max_elev_ft really is feet: 900 ft (~274 m) is below the route's 300 m.
     params["max_elev_ft"] = 900
-    assert "over your max" in client.get("/athletes/42/recommendations", params=params).json()[0]["why"][2]
+    assert "over your max" in client.get("/me/recommendations", params=params).json()[0]["why"][2]
 
 
 def test_recommendations_max_start_is_miles(client):
     # The route's (snapped) start is about 0.5 mi from here: excluded at 0.2 mi, included at 1 mi.
     params = {"lat": 47.6555, "lng": -122.30, "distance_mi": 25}
-    assert client.get("/athletes/42/recommendations", params={**params, "max_start_mi": 0.2}).json() == []
-    assert client.get("/athletes/42/recommendations", params={**params, "max_start_mi": 1}).json()
+    assert client.get("/me/recommendations", params={**params, "max_start_mi": 0.2}).json() == []
+    assert client.get("/me/recommendations", params={**params, "max_start_mi": 1}).json()
 
 
 def test_recommendations_custom_weights(client):
     base = {"lat": 47.66, "lng": -122.30, "distance_mi": 25}
-    default = client.get("/athletes/42/recommendations", params=base).json()[0]["score"]
-    novelty_only = client.get("/athletes/42/recommendations", params={
+    default = client.get("/me/recommendations", params=base).json()[0]["score"]
+    novelty_only = client.get("/me/recommendations", params={
         **base, "w_distance": 0, "w_proximity": 0, "w_elevation": 0, "w_novelty": 100}).json()[0]["score"]
     assert novelty_only != default
     all_zero = {**base, "w_distance": 0, "w_proximity": 0, "w_elevation": 0, "w_novelty": 0}
-    resp = client.get("/athletes/42/recommendations", params=all_zero)
+    resp = client.get("/me/recommendations", params=all_zero)
     assert resp.status_code == 422 and "at least one" in resp.json()["detail"]
-    assert client.get("/athletes/42/recommendations", params={**base, "w_novelty": -1}).status_code == 422
+    assert client.get("/me/recommendations", params={**base, "w_novelty": -1}).status_code == 422

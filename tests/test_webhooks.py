@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import config, db, main, strava
+from tests.conftest import sign_in
 
 ATHLETE = 42
 STRAVA_NOW: dict[int, dict | None] = {}   # activity id -> what Strava returns (None = 404)
@@ -117,12 +118,13 @@ def test_activity_owned_by_someone_else_is_ignored(client):
     assert stored(4) is None
 
 
-def test_update_refreshes_cached_routes(client):
+def test_update_refreshes_cached_routes(client, monkeypatch):
+    sign_in(client, monkeypatch, ATHLETE)
     params = {"lat": 47.66, "lng": -122.30, "distance_mi": 25}
-    assert client.get(f"/athletes/{ATHLETE}/recommendations", params=params).json()[0]["name"] == "Old name"
+    assert client.get("/me/recommendations", params=params).json()[0]["name"] == "Old name"
     STRAVA_NOW[1] = activity(1, "Renamed")
     client.post("/webhooks/strava", json=event(1, "update"))
-    assert client.get(f"/athletes/{ATHLETE}/recommendations", params=params).json()[0]["name"] == "Renamed"
+    assert client.get("/me/recommendations", params=params).json()[0]["name"] == "Renamed"
 
 
 def test_failing_strava_call_still_acknowledges(client, monkeypatch):

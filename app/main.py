@@ -5,8 +5,9 @@ from pathlib import Path
 from typing import Literal
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse
+from starlette.middleware.sessions import SessionMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app import config, db, scoring, strava, webhooks
@@ -22,6 +23,27 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Strava Route Recommendation API", lifespan=lifespan)
+
+# Login state lives in a signed cookie. SameSite=Lax keeps it off cross-site POSTs (so other
+# sites can't trigger a sync as you) while still sending it when Strava redirects back here.
+app.add_middleware(
+    SessionMiddleware, secret_key=config.SESSION_SECRET, session_cookie="route_finder_session",
+    max_age=30 * 24 * 3600, same_site="lax", https_only=config.SECURE_COOKIES,
+)
+
+
+def current_athlete(request: Request) -> int:
+    """The signed-in athlete's id. Every endpoint that reads or changes athlete data uses this,
+    so you can only ever see or sync your own activities."""
+    athlete_id = request.session.get("athlete_id")
+    if athlete_id is not None:
+        conn = db.connect()
+        exists = db.get_athlete(conn, athlete_id) is not None
+        conn.close()
+        if exists:
+            return athlete_id
+        request.session.clear()  # e.g. access was revoked and the webhook deleted the athlete
+    raise HTTPException(401, "Sign in with Strava first: /auth/login")
 
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -60,14 +82,20 @@ def health():
 
 
 @app.get("/auth/login")
-def login():
-    """Send the user to Strava to approve access."""
-    return RedirectResponse(strava.authorize_url())
+def login(request: Request):
+    """Send the user to Strava to approve access. The random `state` is checked when Strava
+    sends them back, so another site can't complete a login into this app on your behalf."""
+    state = secrets.token_urlsafe(24)
+    request.session["oauth_state"] = state
+    return RedirectResponse(strava.authorize_url(state))
 
 
 @app.get("/auth/callback")
-def callback(code: str | None = None, error: str | None = None):
-    """Strava redirects here after approval; trade the one-time code for tokens and store them."""
+def callback(request: Request, code: str | None = None, state: str | None = None, error: str | None = None):
+    """Strava redirects here after approval: check `state`, trade the code for tokens, sign in."""
+    expected = request.session.pop("oauth_state", None)
+    if not expected or not state or not secrets.compare_digest(state, expected):
+        raise HTTPException(400, "Login link expired or didn't start here; go to /auth/login again")
     if error or not code:
         raise HTTPException(400, f"Strava authorization failed: {error or 'no code'}")
     t = strava.exchange_code(code)
@@ -76,11 +104,27 @@ def callback(code: str | None = None, error: str | None = None):
     db.save_athlete(conn, a["id"], f"{a.get('firstname', '')} {a.get('lastname', '')}".strip(),
                     t["access_token"], t["refresh_token"], t["expires_at"])
     conn.close()
-    return {"athlete_id": a["id"], "next": f"POST /athletes/{a['id']}/sync to import your activities"}
+    request.session.clear()              # fresh session at sign-in
+    request.session["athlete_id"] = a["id"]
+    return RedirectResponse("/", status_code=303)
 
 
-@app.post("/athletes/{athlete_id}/sync")
-def sync(athlete_id: int):
+@app.post("/auth/logout", status_code=204)
+def logout(request: Request):
+    request.session.clear()
+
+
+@app.get("/me")
+def me(athlete_id: int = Depends(current_athlete)):
+    """Who is signed in, and how many activities have been imported."""
+    conn = db.connect()
+    athlete, count = db.get_athlete(conn, athlete_id), db.count_activities(conn, athlete_id)
+    conn.close()
+    return {"athlete_id": athlete_id, "name": athlete["name"], "activities": count}
+
+
+@app.post("/me/sync")
+def sync(athlete_id: int = Depends(current_athlete)):
     conn = db.connect()
     try:
         stored = strava.sync_activities(conn, athlete_id)
@@ -92,12 +136,13 @@ def sync(athlete_id: int):
         raise HTTPException(504, "Strava took too long to respond; try again")
     finally:
         conn.close()
+    forget_routes(athlete_id)
     return {"activities_stored": stored}
 
 
-@app.get("/athletes/{athlete_id}/recommendations")
+@app.get("/me/recommendations")
 def recommendations(
-    athlete_id: int,
+    athlete_id: int = Depends(current_athlete),
     lat: float = Query(..., ge=-90, le=90),
     lng: float = Query(..., ge=-180, le=180),
     distance_mi: float = Query(..., gt=0, le=300, description="Target distance in miles"),
@@ -114,9 +159,6 @@ def recommendations(
     """The API speaks miles and feet. Strava data and the scoring maths are metric,
     so values are converted here on the way in and on the way out."""
     conn = db.connect()
-    if db.get_athlete(conn, athlete_id) is None:
-        conn.close()
-        raise HTTPException(404, f"athlete {athlete_id} has not connected Strava")
     rows = db.activities_for(conn, athlete_id, scoring.SPORTS[sport])
     conn.close()
 
