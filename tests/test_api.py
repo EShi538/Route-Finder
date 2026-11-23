@@ -63,3 +63,12 @@ def test_home_page_served(client):
     resp = client.get("/")
     assert resp.status_code == 200
     assert "Route Finder" in resp.text
+
+
+def test_recommendations_imperial_units(client):
+    params = {"lat": 47.66, "lng": -122.30, "distance_km": 40, "units": "imperial"}
+    body = client.get("/athletes/42/recommendations", params=params).json()
+    assert body[0]["distance_km"] == 40.0  # numeric fields stay metric
+    assert "mi" in body[0]["why"][0]
+    params["units"] = "furlongs"
+    assert client.get("/athletes/42/recommendations", params=params).status_code == 422

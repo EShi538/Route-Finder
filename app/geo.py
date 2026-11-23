@@ -1,4 +1,5 @@
 import math
+import random
 
 import polyline as polyline_codec
 
@@ -20,6 +21,66 @@ def decode(encoded: str | None) -> list[tuple[float, float]]:
     if not encoded:
         return []
     return polyline_codec.decode(encoded)
+
+
+def encode(points: list[tuple[float, float]]) -> str | None:
+    """Inverse of decode()."""
+    return polyline_codec.encode(points) if points else None
+
+
+# ---------------------------------------------------------------------------
+# Privacy
+#
+# A route's first and last points are usually where the athlete lives or works.
+# Before a path leaves the server we cut a stretch off each end, like Strava's
+# own privacy zones. The cut length varies per activity (so nobody can add a
+# fixed amount back) but is stable for the same activity (so repeated requests
+# can't be averaged to find the real end). Everything shown to the user, and
+# every distance we report, is measured from the trimmed path.
+# ---------------------------------------------------------------------------
+
+TRIM_MIN_M = 300
+TRIM_MAX_M = 600
+MIN_VISIBLE_M = 200     # if less than this would remain, show no path at all
+SNAP_DEG = 0.005        # ~500 m grid for activities with no GPS path to trim
+
+
+def trim_lengths_m(activity_id: int) -> tuple[float, float]:
+    """How many metres to hide at the start and end of this activity's path."""
+    rng = random.Random(f"trim:{activity_id}")
+    return rng.uniform(TRIM_MIN_M, TRIM_MAX_M), rng.uniform(TRIM_MIN_M, TRIM_MAX_M)
+
+
+def _cut_start(points: list[tuple[float, float]], cut_m: float) -> list[tuple[float, float]]:
+    """Drop the first cut_m metres of a path, interpolating the new first point."""
+    walked = 0.0
+    for i, (a, b) in enumerate(zip(points, points[1:])):
+        seg = haversine_km(*a, *b) * 1000
+        if walked + seg >= cut_m:
+            t = (cut_m - walked) / seg if seg else 0.0
+            new_start = (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+            return [new_start] + points[i + 1:]
+        walked += seg
+    return []
+
+
+def path_length_m(points: list[tuple[float, float]]) -> float:
+    return sum(haversine_km(*a, *b) for a, b in zip(points, points[1:])) * 1000
+
+
+def trim_ends(points: list[tuple[float, float]], activity_id: int) -> list[tuple[float, float]]:
+    """The part of a path that is safe to show: both ends cut off. Empty if the route is too short."""
+    head, tail = trim_lengths_m(activity_id)
+    if path_length_m(points) < head + tail + MIN_VISIBLE_M:
+        return []
+    trimmed = _cut_start(points, head)
+    return _cut_start(trimmed[::-1], tail)[::-1]
+
+
+def snap(lat: float, lng: float, step_deg: float = SNAP_DEG) -> tuple[float, float]:
+    """Round a point to the centre of a coarse grid cell (for starts we can't trim)."""
+    return ((math.floor(lat / step_deg) + 0.5) * step_deg,
+            (math.floor(lng / step_deg) + 0.5) * step_deg)
 
 
 def is_loop(points: list[tuple[float, float]], tolerance_km: float = 0.5) -> bool:

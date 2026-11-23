@@ -63,9 +63,9 @@
       <label>Sport
         <select id="sport"><option value="ride">Ride</option><option value="run">Run</option><option value="walk">Walk / Hike</option></select>
       </label>
-      <label>Distance (km) <input id="distance" type="number" min="1" step="any" value="40" required></label>
-      <label>Max climbing (m) <input id="elev" type="number" min="0" step="any" placeholder="any"></label>
-      <label>Max start (km) <input id="maxstart" type="number" min="0.1" step="any" value="10"></label>
+      <label>Distance (mi) <input id="distance" type="number" min="0.5" step="any" value="25" required></label>
+      <label>Max climbing (ft) <input id="elev" type="number" min="0" step="any" placeholder="any"></label>
+      <label>Max start (mi) <input id="maxstart" type="number" min="0.1" step="any" value="6"></label>
       <label>Latitude <input id="lat" type="number" step="any" value="47.66" required></label>
       <label>Longitude <input id="lng" type="number" step="any" value="-122.30" required></label>
       <div class="row">
@@ -101,6 +101,12 @@ function decodePolyline(str) {
 }
 
 const $ = (id) => document.getElementById(id);
+
+// The page works in miles and feet; the API always takes and returns km and m.
+const KM_PER_MI = 1.609344, M_PER_FT = 0.3048;
+const mi = (km) => (km / KM_PER_MI).toFixed(1);
+const ft = (m) => Math.round(m / M_PER_FT).toLocaleString("en-US");
+const miAway = (km) => +(km / KM_PER_MI).toFixed(2);  // server rounds to 0.25 mi: 0, 0.25, 0.5…
 const map = L.map("map").setView([47.66, -122.30], 12);
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19, attribution: "&copy; OpenStreetMap contributors",
@@ -154,9 +160,9 @@ function render(routes, lat, lng) {
         <div class="score">${Math.round(r.score * 100)}</div>
       </div>
       <div class="stats">
-        <span><b>${r.distance_km}</b> km</span>
-        <span><b>${r.elev_gain_m}</b> m up</span>
-        <span><b>${r.start_km_away}</b> km away</span>
+        <span><b>${mi(r.distance_km)}</b> mi</span>
+        <span><b>${ft(r.elev_gain_m)}</b> ft up</span>
+        <span><b>${miAway(r.start_km_away)}</b> mi away</span>
         <span>${r.loop ? "Loop" : "Point to point"}</span>
       </div>
       <div class="bar"><i style="width:${Math.round(r.score * 100)}%"></i></div>
@@ -181,10 +187,12 @@ async function search(e) {
   try { localStorage.setItem("athleteId", id); } catch {}
 
   const params = new URLSearchParams({
-    lat, lng, distance_km: $("distance").value, sport: $("sport").value,
-    max_start_km: $("maxstart").value, include_polyline: "true", limit: "8",
+    lat, lng, sport: $("sport").value, units: "imperial",
+    distance_km: $("distance").value * KM_PER_MI,
+    max_start_km: $("maxstart").value * KM_PER_MI,
+    include_polyline: "true", limit: "8",
   });
-  if ($("elev").value) params.set("max_elev_m", $("elev").value);
+  if ($("elev").value) params.set("max_elev_m", $("elev").value * M_PER_FT);
 
   $("go").disabled = true;
   $("status").textContent = "Finding routes…";
@@ -227,7 +235,7 @@ $("locate").addEventListener("click", () => {
 
 try { const saved = localStorage.getItem("athleteId"); if (saved) $("athlete").value = saved; } catch {}
 
-// Shareable links: /?athlete=123&distance=40&sport=ride&lat=..&lng=.. fills the form and searches.
+// Shareable links (distance and maxstart in miles, elev in feet): /?athlete=123&distance=25&sport=ride&lat=..&lng=.. fills the form and searches.
 const q = new URLSearchParams(location.search);
 const fields = { athlete: "athlete", distance: "distance", sport: "sport", lat: "lat", lng: "lng", elev: "elev", maxstart: "maxstart" };
 for (const [param, id] of Object.entries(fields)) if (q.has(param)) $(id).value = q.get(param);

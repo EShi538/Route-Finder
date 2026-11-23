@@ -23,13 +23,15 @@ Strava ──OAuth 2.0──▶ FastAPI service ──▶ SQLite
 
 Routes that are too long, too short or too far away are filtered out before ranking.
 
+5. **Privacy:** route start and end points are usually someone's home, so they never leave the server. Every returned `polyline` has 300–600 m cut off each end (the amount varies per activity but stays the same between requests), and routes too short to trim come back with no path. `start_km_away` and the proximity score are measured from the first point that is still visible, and the distance is rounded to 0.5 km (0.25 mi with `units=imperial`). Activities with no GPS path are measured from a start snapped to a ~500 m grid.
+
 ## Endpoints
 | Method | Path | Description |
 |---|---|---|
 | GET | `/auth/login` | Start the Strava OAuth flow |
 | GET | `/auth/callback` | OAuth redirect target; stores tokens |
 | POST | `/athletes/{id}/sync` | Import activities from Strava |
-| GET | `/athletes/{id}/recommendations` | Ranked routes. Params: `lat`, `lng`, `distance_km`, `sport` (ride/run/walk), `max_elev_m`, `max_start_km`, `limit` |
+| GET | `/athletes/{id}/recommendations` | Ranked routes. Params: `lat`, `lng`, `distance_km`, `sport` (ride/run/walk), `max_elev_m`, `max_start_km`, `limit`, `units` (metric/imperial: wording of `why` only; numeric fields are always km and m) |
 | GET | `/health` | Health check |
 
 Example:
@@ -37,10 +39,12 @@ Example:
 curl "http://localhost:8000/athletes/12345/recommendations?lat=47.66&lng=-122.30&distance_km=40&max_elev_m=500"
 ```
 ```json
-[{"name": "Lake loop", "distance_km": 41.2, "elev_gain_m": 310, "start_km_away": 0.8,
+[{"name": "Lake loop", "distance_km": 41.2, "elev_gain_m": 310, "start_km_away": 1.0,
   "loop": true, "score": 0.912,
-  "why": ["41.2 km vs. 40 km target", "starts 0.8 km away", "310 m climbing", "last done 44 days ago, 6 times total"]}]
+  "why": ["41.2 km vs. 40 km target", "starts about 1.0 km away", "310 m climbing", "last done 44 days ago, 6 times total"]}]
 ```
+
+The web page at `/` works in miles and feet. It converts to km and m when calling the API.
 
 ## Run locally
 ```bash

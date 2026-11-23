@@ -75,3 +75,16 @@ def test_recommend_empty_history():
 def test_recommend_respects_limit():
     cands = scoring.group_routes([row(i, 40, lat=HOME[0] + i * 0.01) for i in range(10)])
     assert len(scoring.recommend(cands, *HOME, target_km=40, limit=3, now=NOW)) == 3
+
+
+def test_recommend_imperial_wording():
+    cands = scoring.group_routes([row(1, 40.2335, elev=300)])  # 25 mi, ~984 ft
+    [metric] = scoring.recommend(cands, *HOME, target_km=40.2335, max_elev_m=400, now=NOW)
+    [imperial] = scoring.recommend(cands, *HOME, target_km=40.2335, max_elev_m=400, now=NOW, units="imperial")
+    assert imperial.why[0] == "25.0 mi vs. 25 mi target"
+    assert imperial.why[2] == "984 ft climbing"
+    away_mi = float(imperial.why[1].removeprefix("starts about ").removesuffix(" mi away"))
+    assert (away_mi * 4) == int(away_mi * 4)  # whole quarter miles
+    assert metric.why[0] == "40.2 km vs. 40.2 km target"
+    # Ranking is unchanged; only the start distance is rounded in the shown unit.
+    assert imperial.score == metric.score

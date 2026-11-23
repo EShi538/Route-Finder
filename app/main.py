@@ -95,7 +95,9 @@ def recommendations(
     max_start_km: float = Query(10.0, gt=0, le=100),
     limit: int = Query(5, ge=1, le=20),
     include_polyline: bool = False,
+    units: Literal["metric", "imperial"] = "metric",
 ):
+    """Numbers in the response are always km and m; `units` only changes the wording of `why`."""
     conn = db.connect()
     if db.get_athlete(conn, athlete_id) is None:
         conn.close()
@@ -104,7 +106,7 @@ def recommendations(
     conn.close()
 
     recs = scoring.recommend(routes_for(athlete_id, sport, rows), lat, lng, distance_km,
-                             max_elev_m=max_elev_m, max_start_km=max_start_km, limit=limit)
+                             max_elev_m=max_elev_m, max_start_km=max_start_km, limit=limit, units=units)
     return [
         {
             "name": r.candidate.name,
@@ -116,7 +118,8 @@ def recommendations(
             "loop": r.loop,
             "score": r.score,
             "why": r.why,
-            **({"polyline": r.candidate.polyline} if include_polyline else {}),
+            # Only ever the trimmed path: the real start and end never leave the server.
+            **({"polyline": r.candidate.public_polyline} if include_polyline else {}),
         }
         for r in recs
     ]

@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from app.geo import Shape, decode, haversine_km, is_loop, same_shape
+from app.geo import Shape, decode, encode, haversine_km, is_loop, same_shape, snap, trim_ends
 
 SPORTS = {
     "ride": {"Ride", "GravelRide", "MountainBikeRide", "EBikeRide"},
@@ -18,6 +18,38 @@ SHAPE_DIST_PCT = 0.25       # only shape-compare activities within 25% of each o
 SAME_ROUTE_START_KM = 0.3   # fallback when an activity has no GPS path: same start...
 SAME_ROUTE_DIST_PCT = 0.05  # ...and distance within 5%
 NOVELTY_FULL_DAYS = 42      # not done in 6+ weeks = full novelty bonus
+DISTANCE_ROUND_KM = 0.5     # reported start distances are rounded to this
+
+KM_PER_MI = 1.609344
+M_PER_FT = 0.3048
+
+
+class Units:
+    """Formats distances and climbing for the human-readable "why" text.
+    Calculations always use km and m; only the wording changes."""
+
+    def __init__(self, system: str = "metric"):
+        self.imperial = system == "imperial"
+        # Start distances are coarsened in the unit shown, so imperial reads 0.25 / 0.5 / 0.75 mi.
+        self.round_km = 0.25 * KM_PER_MI if self.imperial else DISTANCE_ROUND_KM
+
+    def dist(self, km: float) -> str:
+        # Converts the same 1-decimal km the API returns, so the text matches the page's cards.
+        km = round(km, 1)
+        return f"{km / KM_PER_MI:.1f} mi" if self.imperial else f"{km:.1f} km"
+
+    def away(self, km: float) -> str:
+        value, unit = (km / KM_PER_MI, "mi") if self.imperial else (km, "km")
+        return f"{round(value, 2):g} {unit}"
+
+    def target(self, km: float) -> str:
+        # The user typed this number, so show it back without padding (40 km, 25 mi).
+        value, unit = (km / KM_PER_MI, "mi") if self.imperial else (km, "km")
+        return f"{round(value, 1):g} {unit}"
+
+    def elev(self, m: float) -> str:
+        m = round(m)
+        return f"{m / M_PER_FT:,.0f} ft" if self.imperial else f"{m:,.0f} m"
 
 
 @dataclass
@@ -33,6 +65,18 @@ class Candidate:
     last_done: datetime
     times_done: int = 1
     shape: Shape | None = field(default=None, repr=False, compare=False)
+    loop: bool = False
+    # What may leave the server: the path with both ends trimmed off, and the
+    # point we measure "km away" from (first visible point, or a snapped start).
+    public_polyline: str | None = None
+    public_start: tuple[float, float] | None = None
+
+    def __post_init__(self):
+        points = decode(self.polyline)
+        self.loop = is_loop(points)
+        visible = trim_ends(points, self.activity_id)
+        self.public_polyline = encode(visible)
+        self.public_start = visible[0] if visible else snap(self.start_lat, self.start_lng)
 
 
 @dataclass
@@ -121,11 +165,15 @@ def recommend(
     max_start_km: float = 10.0,
     limit: int = 5,
     now: datetime | None = None,
+    units: str = "metric",
 ) -> list[Recommendation]:
     now = now or datetime.now(timezone.utc)
+    u = Units(units)
     results = []
     for c in candidates:
-        km_away = haversine_km(lat, lng, c.start_lat, c.start_lng)
+        # Measured from the public start, never the real one, so the score and the
+        # reported distance can't be used to triangulate where the athlete lives.
+        km_away = haversine_km(lat, lng, *c.public_start)
         d, p = distance_fit(c.distance_km, target_km), proximity_fit(km_away, max_start_km)
         if d == 0 or p == 0:  # too long/short or too far away: not a candidate at all
             continue
@@ -133,14 +181,15 @@ def recommend(
         score = (WEIGHTS["distance"] * d + WEIGHTS["proximity"] * p
                  + WEIGHTS["elevation"] * e + WEIGHTS["novelty"] * n)
 
-        why = [f"{c.distance_km:.1f} km vs. {target_km:g} km target",
-               f"starts {km_away:.1f} km away"]
+        shown_km = round(km_away / u.round_km) * u.round_km
+        why = [f"{u.dist(c.distance_km)} vs. {u.target(target_km)} target",
+               f"starts about {u.away(shown_km)} away"]
         if max_elev_m is not None:
-            why.append(f"{c.elev_gain_m:.0f} m climbing" + (" (over your max)" if e < 1 else ""))
+            why.append(f"{u.elev(c.elev_gain_m)} climbing" + (" (over your max)" if e < 1 else ""))
         days = int((now - c.last_done).days)
         why.append(f"last done {days} days ago" + (f", {c.times_done} times total" if c.times_done > 1 else ""))
 
-        results.append(Recommendation(c, round(score, 3), round(km_away, 2), is_loop(decode(c.polyline)), why))
+        results.append(Recommendation(c, round(score, 3), round(shown_km, 3), c.loop, why))
 
     results.sort(key=lambda r: r.score, reverse=True)
     return results[:limit]
