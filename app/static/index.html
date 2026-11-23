@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Route Finder</title>
+<link rel="stylesheet" href="/static/leaflet/leaflet.css">
+<script src="/static/leaflet/leaflet.js"></script>
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #fff; --ink: #1d1d1b; --muted: #6b6a66; --line: #e4e2dc;
+    --accent: #fc5200; --accent-soft: #fff0e8; --route: #8a8781;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; display: flex; flex-direction: column; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }
+  header { padding: 18px 24px; border-bottom: 1px solid var(--line); background: var(--panel); display: flex; align-items: baseline; gap: 12px; }
+  header h1 { margin: 0; font-size: 20px; letter-spacing: -0.01em; }
+  header span { color: var(--muted); font-size: 14px; }
+  main { flex: 1; min-height: 0; display: grid; grid-template-columns: 380px 1fr; }
+  aside { overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel); }
+  form { padding: 18px 20px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; border-bottom: 1px solid var(--line); }
+  label { display: flex; flex-direction: column; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; gap: 4px; }
+  label.full { grid-column: 1 / -1; }
+  input, select { width: 100%; min-width: 0; font: inherit; text-transform: none; letter-spacing: 0; color: var(--ink); padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  .row { grid-column: 1 / -1; display: flex; gap: 8px; }
+  button { font: inherit; font-weight: 600; border: 0; border-radius: 8px; padding: 10px 14px; cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; flex: 1; }
+  button.ghost { background: var(--accent-soft); color: var(--accent); }
+  button:disabled { opacity: 0.6; cursor: wait; }
+  #status { padding: 14px 20px; color: var(--muted); font-size: 14px; }
+  #status a { color: var(--accent); }
+  ol { list-style: none; margin: 0; padding: 0 12px 20px; }
+  li.card { padding: 14px; margin-top: 10px; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; transition: border-color .15s, box-shadow .15s; }
+  li.card:hover, li.card.active { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .top { display: flex; gap: 10px; align-items: flex-start; }
+  .rank { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--ink); color: #fff; font-size: 13px; font-weight: 700; display: grid; place-items: center; }
+  li.active .rank { background: var(--accent); }
+  .name { font-weight: 650; flex: 1; }
+  .name a { color: inherit; text-decoration: none; }
+  .name a:hover { text-decoration: underline; }
+  .score { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--accent); }
+  .stats { display: flex; gap: 14px; margin: 8px 0 0 36px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .stats b { color: var(--ink); font-weight: 600; }
+  .bar { height: 4px; border-radius: 2px; background: var(--line); margin: 10px 0 0 36px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent); }
+  .why { margin: 10px 0 0 36px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .why span { font-size: 12px; padding: 3px 8px; border-radius: 999px; background: var(--bg); color: var(--muted); }
+  #map { height: 100%; }
+  @media (max-width: 800px) {
+    main { grid-template-columns: 1fr; }
+    #map { height: 50vh; order: -1; }
+  }
+</style>
+</head>
+<body>
+<header><h1>Route Finder</h1><span>Route recommendations from your Strava history</span></header>
+<main>
+  <aside>
+    <form id="form">
+      <label class="full">Athlete ID <input id="athlete" required inputmode="numeric" placeholder="from /auth/login"></label>
+      <label>Sport
+        <select id="sport"><option value="ride">Ride</option><option value="run">Run</option><option value="walk">Walk / Hike</option></select>
+      </label>
+      <label>Distance (km) <input id="distance" type="number" min="1" step="any" value="40" required></label>
+      <label>Max climbing (m) <input id="elev" type="number" min="0" step="any" placeholder="any"></label>
+      <label>Max start (km) <input id="maxstart" type="number" min="0.1" step="any" value="10"></label>
+      <label>Latitude <input id="lat" type="number" step="any" value="47.66" required></label>
+      <label>Longitude <input id="lng" type="number" step="any" value="-122.30" required></label>
+      <div class="row">
+        <button type="button" class="ghost" id="locate">Use my location</button>
+        <button type="submit" class="primary" id="go">Find routes</button>
+      </div>
+    </form>
+    <div id="status">Enter your athlete ID and click Find routes. Not connected yet? <a href="/auth/login">Connect Strava</a>.</div>
+    <ol id="results"></ol>
+  </aside>
+  <div id="map"></div>
+</main>
+
+<script>
+// Decode a Google-encoded polyline (Strava's map.summary_polyline) into [lat, lng] pairs.
+function decodePolyline(str) {
+  const points = [];
+  let index = 0, lat = 0, lng = 0;
+  while (index < str.length) {
+    for (const which of [0, 1]) {
+      let shift = 0, result = 0, byte;
+      do {
+        byte = str.charCodeAt(index++) - 63;
+        result |= (byte & 0x1f) << shift;
+        shift += 5;
+      } while (byte >= 0x20);
+      const delta = (result & 1) ? ~(result >> 1) : (result >> 1);
+      if (which === 0) lat += delta; else lng += delta;
+    }
+    points.push([lat / 1e5, lng / 1e5]);
+  }
+  return points;
+}
+
+const $ = (id) => document.getElementById(id);
+const map = L.map("map").setView([47.66, -122.30], 12);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19, attribution: "&copy; OpenStreetMap contributors",
+}).addTo(map);
+
+let layers = [];
+let startMarker = null;
+
+const ROUTE_STYLE = { color: "#8a8781", weight: 3, opacity: 0.55 };
+const ACTIVE_STYLE = { color: "#fc5200", weight: 5, opacity: 1 };
+
+function setActive(i) {
+  layers.forEach((layer, j) => {
+    if (!layer) return;
+    layer.setStyle(j === i ? ACTIVE_STYLE : ROUTE_STYLE);
+    if (j === i) layer.bringToFront();
+  });
+  document.querySelectorAll("li.card").forEach((el, j) => el.classList.toggle("active", j === i));
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function render(routes, lat, lng) {
+  layers.forEach((l) => l && l.remove());
+  layers = [];
+  if (startMarker) startMarker.remove();
+  startMarker = L.circleMarker([lat, lng], { radius: 7, color: "#1d1d1b", fillColor: "#fff", fillOpacity: 1, weight: 3 })
+    .addTo(map).bindTooltip("Your start");
+
+  const list = $("results");
+  list.innerHTML = "";
+  const bounds = L.latLngBounds([[lat, lng]]);
+
+  routes.forEach((r, i) => {
+    const pts = r.polyline ? decodePolyline(r.polyline) : [];
+    const layer = pts.length ? L.polyline(pts, ROUTE_STYLE).addTo(map) : null;
+    if (layer) {
+      bounds.extend(layer.getBounds());
+      layer.on("click", () => setActive(i));
+    }
+    layers.push(layer);
+
+    const li = document.createElement("li");
+    li.className = "card";
+    li.innerHTML = `
+      <div class="top">
+        <div class="rank">${i + 1}</div>
+        <div class="name"><a href="${escapeHtml(r.strava_activity_url)}" target="_blank" rel="noopener">${escapeHtml(r.name)}</a></div>
+        <div class="score">${Math.round(r.score * 100)}</div>
+      </div>
+      <div class="stats">
+        <span><b>${r.distance_km}</b> km</span>
+        <span><b>${r.elev_gain_m}</b> m up</span>
+        <span><b>${r.start_km_away}</b> km away</span>
+        <span>${r.loop ? "Loop" : "Point to point"}</span>
+      </div>
+      <div class="bar"><i style="width:${Math.round(r.score * 100)}%"></i></div>
+      <div class="why">${r.why.map((w) => `<span>${escapeHtml(w)}</span>`).join("")}</div>`;
+    li.addEventListener("mouseenter", () => setActive(i));
+    li.addEventListener("click", (e) => {
+      if (e.target.tagName === "A") return;
+      setActive(i);
+      if (layer) map.fitBounds(layer.getBounds(), { padding: [30, 30] });
+    });
+    list.appendChild(li);
+  });
+
+  map.fitBounds(bounds, { padding: [30, 30] });
+  if (routes.length) setActive(0);
+}
+
+async function search(e) {
+  e.preventDefault();
+  const id = $("athlete").value.trim();
+  const lat = parseFloat($("lat").value), lng = parseFloat($("lng").value);
+  try { localStorage.setItem("athleteId", id); } catch {}
+
+  const params = new URLSearchParams({
+    lat, lng, distance_km: $("distance").value, sport: $("sport").value,
+    max_start_km: $("maxstart").value, include_polyline: "true", limit: "8",
+  });
+  if ($("elev").value) params.set("max_elev_m", $("elev").value);
+
+  $("go").disabled = true;
+  $("status").textContent = "Finding routes…";
+  try {
+    const res = await fetch(`/athletes/${encodeURIComponent(id)}/recommendations?${params}`);
+    const body = await res.json();
+    if (res.status === 404) {
+      $("status").innerHTML = 'That athlete hasn\'t connected Strava. <a href="/auth/login">Connect Strava</a>.';
+      render([], lat, lng);
+    } else if (!res.ok) {
+      const detail = Array.isArray(body.detail) ? body.detail.map((d) => `${d.loc.at(-1)}: ${d.msg}`).join("; ") : body.detail;
+      $("status").textContent = `Error: ${detail}`;
+    } else if (body.length === 0) {
+      $("status").textContent = "No matching routes. Try a different distance or a larger max start distance.";
+      render([], lat, lng);
+    } else {
+      $("status").textContent = `${body.length} route${body.length > 1 ? "s" : ""} found. Hover a card to highlight it.`;
+      render(body, lat, lng);
+    }
+  } catch (err) {
+    $("status").textContent = "Couldn't reach the server. Is uvicorn running?";
+  } finally {
+    $("go").disabled = false;
+  }
+}
+
+$("form").addEventListener("submit", search);
+$("locate").addEventListener("click", () => {
+  if (!navigator.geolocation) return;
+  $("status").textContent = "Getting your location…";
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      $("lat").value = pos.coords.latitude.toFixed(5);
+      $("lng").value = pos.coords.longitude.toFixed(5);
+      $("status").textContent = "Location set. Click Find routes.";
+    },
+    () => { $("status").textContent = "Couldn't get your location; enter it manually."; },
+  );
+});
+
+try { const saved = localStorage.getItem("athleteId"); if (saved) $("athlete").value = saved; } catch {}
+
+// Shareable links: /?athlete=123&distance=40&sport=ride&lat=..&lng=.. fills the form and searches.
+const q = new URLSearchParams(location.search);
+const fields = { athlete: "athlete", distance: "distance", sport: "sport", lat: "lat", lng: "lng", elev: "elev", maxstart: "maxstart" };
+for (const [param, id] of Object.entries(fields)) if (q.has(param)) $(id).value = q.get(param);
+if (q.has("athlete")) $("form").requestSubmit();
+</script>
+</body>
+</html>

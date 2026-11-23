@@ -1,9 +1,11 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from app import db, scoring, strava
 
@@ -17,6 +19,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Strava Route Recommendation API", lifespan=lifespan)
+
+
+STATIC_DIR = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/", include_in_schema=False)
+def home():
+    """The web page: a form, a map, and result cards that call the recommendations endpoint."""
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/health")
