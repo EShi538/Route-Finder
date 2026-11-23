@@ -14,7 +14,8 @@
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body { margin: 0; display: flex; flex-direction: column; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }
-  header { padding: 18px 24px; border-bottom: 1px solid var(--line); background: var(--panel); display: flex; align-items: baseline; gap: 12px; }
+  header { padding: 18px 24px; border-bottom: 1px solid var(--line); background: var(--panel); display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
+  header .powered { margin-left: auto; align-self: center; display: block; height: 16px; width: auto; }
   header h1 { margin: 0; font-size: 20px; letter-spacing: -0.01em; }
   header span { color: var(--muted); font-size: 14px; }
   main { flex: 1; min-height: 0; display: grid; grid-template-columns: 380px 1fr; }
@@ -32,8 +33,10 @@
   #account { padding: 12px 20px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 14px; min-height: 58px; }
   #account .who { flex: 1; min-width: 0; color: var(--muted); }
   #account .who b { color: var(--ink); font-weight: 600; }
-  #account button, #account a.connect { padding: 7px 12px; font-size: 13px; }
-  a.connect { background: var(--accent); color: #fff; border-radius: 8px; font-weight: 600; text-decoration: none; }
+  #account button { padding: 7px 12px; font-size: 13px; }
+  #account.signed-out { flex-direction: column; align-items: flex-start; padding-block: 16px; }
+  a.connect { display: block; line-height: 0; border-radius: 4px; }
+  a.connect:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
   #status { padding: 14px 20px; color: var(--muted); font-size: 14px; }
   #status a { color: var(--accent); }
   ol { list-style: none; margin: 0; padding: 0 12px 20px; }
@@ -43,8 +46,8 @@
   .rank { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--ink); color: #fff; font-size: 13px; font-weight: 700; display: grid; place-items: center; }
   li.active .rank { background: var(--accent); }
   .name { font-weight: 650; flex: 1; }
-  .name a { color: inherit; text-decoration: none; }
-  .name a:hover { text-decoration: underline; }
+  a.view-strava { display: inline-block; margin: 10px 0 0 36px; font-size: 13px; font-weight: 700; color: #fc5200; text-decoration: none; }
+  a.view-strava:hover { text-decoration: underline; }
   .score { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--accent); }
   .stats { display: flex; gap: 14px; margin: 8px 0 0 36px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .stats b { color: var(--ink); font-weight: 600; }
@@ -73,7 +76,11 @@
 </style>
 </head>
 <body>
-<header><h1>Route Finder</h1><span>Route recommendations from your Strava history</span></header>
+<header>
+  <h1>Route Finder</h1><span>Route recommendations from your Strava history</span>
+  <!-- Strava brand guidelines: required wherever Strava data is shown; kept apart from and smaller than our own name. -->
+  <img class="powered" src="/static/strava/powered-by-strava.svg" width="158" height="16" alt="Powered by Strava">
+</header>
 <main>
   <aside>
     <div id="account" aria-live="polite"><span class="who">Checking sign-in…</span></div>
@@ -173,7 +180,7 @@ function render(routes, lat, lng) {
     li.innerHTML = `
       <div class="top">
         <div class="rank">${i + 1}</div>
-        <div class="name"><a href="${escapeHtml(r.strava_activity_url)}" target="_blank" rel="noopener">${escapeHtml(r.name)}</a></div>
+        <div class="name">${escapeHtml(r.name)}</div>
         <div class="score">${Math.round(r.score * 100)}</div>
       </div>
       <div class="stats">
@@ -183,7 +190,8 @@ function render(routes, lat, lng) {
         ${ROUTE_TYPES[r.route_type] ? `<span>${ROUTE_TYPES[r.route_type]}</span>` : ""}
       </div>
       <div class="bar"><i style="width:${Math.round(r.score * 100)}%"></i></div>
-      <div class="why">${r.why.map((w) => `<span>${escapeHtml(w)}</span>`).join("")}</div>`;
+      <div class="why">${r.why.map((w) => `<span>${escapeHtml(w)}</span>`).join("")}</div>
+      <a class="view-strava" href="${escapeHtml(r.strava_activity_url)}" target="_blank" rel="noopener">View on Strava</a>`;
     li.addEventListener("mouseenter", () => setActive(i));
     li.addEventListener("click", (e) => {
       if (e.target.tagName === "A") return;
@@ -294,12 +302,14 @@ let account = null;   // {athlete_id, name, activities} while signed in
 function showSignedOut() {
   account = null;
   $("go").disabled = true;
-  $("account").innerHTML = '<span class="who">Sign in to see routes from your Strava history.</span><a class="connect" href="/auth/login">Connect with Strava</a>';
+  $("account").className = "signed-out";
+  $("account").innerHTML = '<span class="who">Sign in to see routes from your Strava history.</span><a class="connect" href="/auth/login"><img src="/static/strava/connect-with-strava.svg" width="237" height="48" alt="Connect with Strava"></a>';
   $("status").textContent = "";
 }
 
 function showAccount() {
   $("go").disabled = false;
+  $("account").className = "";
   const n = account.activities.toLocaleString("en-US");
   $("account").innerHTML = `<span class="who"><b>${escapeHtml(account.name || "Signed in")}</b> · ${n} activities</span>
     <button type="button" class="ghost" id="sync">Sync now</button>
