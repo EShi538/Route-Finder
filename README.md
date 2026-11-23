@@ -36,6 +36,7 @@ Each route is also labelled `route_type`: `point_to_point` if it ends more than 
 | GET | `/auth/callback` | OAuth redirect target; stores tokens |
 | POST | `/athletes/{id}/sync` | Import activities from Strava |
 | GET | `/athletes/{id}/recommendations` | Ranked routes. Params: `lat`, `lng`, `distance_mi`, `sport` (ride/run/walk), `max_elev_ft` (max 50,000), `max_start_mi` (default 6, max 60), `limit`, `w_distance`/`w_proximity`/`w_elevation`/`w_novelty` (relative weights, 0–100) |
+| GET/POST | `/webhooks/strava` | Strava webhook: verification handshake and activity events (see below) |
 | GET | `/health` | Health check |
 
 Example:
@@ -49,6 +50,22 @@ curl "http://localhost:8000/athletes/12345/recommendations?lat=47.66&lng=-122.30
 ```
 
 All API inputs and outputs are in miles and feet. Strava's data and the scoring code use km and m internally, and `app/main.py` converts between them.
+
+## Keeping activities up to date (Strava webhook)
+`POST /athletes/{id}/sync` imports your whole history. After that, a webhook keeps it current: Strava notifies the app whenever you upload, edit or delete an activity, or revoke access, and the app updates just that activity.
+
+Strava doesn't sign webhook events, so the app never trusts what an event says. It re-fetches the activity from Strava and saves it if it exists, or deletes the local copy only if Strava returns 404. On a "revoked access" event, it deletes the athlete's data only if Strava really rejects their tokens. A forged event can't add or remove data.
+
+Strava needs a public HTTPS URL, so set this up once the app is deployed. To try it locally, a tunnel works (e.g. `cloudflared tunnel --url http://localhost:8000`).
+
+1. Put a long random string in `.env` as `STRAVA_VERIFY_TOKEN` (`python -c "import secrets; print(secrets.token_urlsafe(32))"`) and restart the app.
+2. With the app running at that URL, create the subscription. Strava calls `GET /webhooks/strava` to check the token before it agrees:
+   ```bash
+   python -m app.webhook_admin subscribe https://your-host/webhooks/strava
+   ```
+3. Put the `id` it prints in `.env` as `STRAVA_SUBSCRIPTION_ID` and restart. Events for any other subscription are then ignored.
+
+`python -m app.webhook_admin view` shows the current subscription, and `unsubscribe <id>` removes it. Strava allows one subscription per API app, so unsubscribe before switching to a new URL (e.g. from a tunnel to your deployed host). Webhook activity shows up in the uvicorn log as `webhook activity create 123: stored`.
 
 ## Run locally
 ```bash

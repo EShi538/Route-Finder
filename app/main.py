@@ -1,13 +1,15 @@
+import logging
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import db, scoring, strava
+from app import config, db, scoring, strava, webhooks
 from app.scoring import KM_PER_MI, M_PER_FT
 
 
@@ -27,6 +29,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 # Grouping activities into routes compares GPS shapes and takes ~0.5-1 s for ~1000
 # activities, but the result only changes when activities are added. Cache it, keyed
 # on what would change it: the athlete, sport, and the set of activities (count + newest id).
+# Edits to existing activities don't change that key, so webhook updates clear it explicitly.
 _route_cache: dict[tuple, list] = {}
 
 
@@ -35,6 +38,13 @@ def routes_for(athlete_id: int, sport: str, rows) -> list:
     if key not in _route_cache:
         _route_cache[key] = scoring.group_routes(rows)
     return _route_cache[key]
+
+
+def forget_routes(athlete_id: int) -> None:
+    for key in [k for k in _route_cache if k[0] == athlete_id]:
+        del _route_cache[key]
+
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -140,3 +150,44 @@ def recommendations(
         }
         for r in recs
     ]
+
+
+log = logging.getLogger("uvicorn.error")  # uvicorn configures this one, so messages show in its output
+
+
+@app.get("/webhooks/strava", include_in_schema=False)
+def webhook_verify(
+    mode: str = Query("", alias="hub.mode"),
+    token: str = Query("", alias="hub.verify_token"),
+    challenge: str = Query("", alias="hub.challenge"),
+):
+    """Strava calls this once when the subscription is created, to check we own the URL."""
+    expected = config.STRAVA_VERIFY_TOKEN
+    if mode != "subscribe" or not expected or not secrets.compare_digest(token, expected):
+        raise HTTPException(403, "verify token mismatch")
+    return {"hub.challenge": challenge}
+
+
+def _process_event(event: dict) -> None:
+    try:
+        outcome, changed = webhooks.handle_event(event)
+    except Exception:  # never let one bad event take anything else down
+        log.exception("webhook event failed: %s", {k: event.get(k) for k in ("object_type", "aspect_type", "object_id")})
+        return
+    if changed is not None:
+        forget_routes(changed)
+    log.info("webhook %s %s %s: %s", event.get("object_type"), event.get("aspect_type"), event.get("object_id"), outcome)
+
+
+@app.post("/webhooks/strava", include_in_schema=False)
+async def webhook_event(request: Request, background: BackgroundTasks):
+    """Strava posts every create/update/delete here and wants a 200 within 2 seconds,
+    so we acknowledge immediately and do the Strava round trip afterwards."""
+    try:
+        event = await request.json()
+    except ValueError:
+        raise HTTPException(400, "expected JSON")
+    if not isinstance(event, dict):
+        raise HTTPException(400, "expected a JSON object")
+    background.add_task(_process_event, event)
+    return {"ok": True}

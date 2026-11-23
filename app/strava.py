@@ -93,3 +93,25 @@ def sync_activities(conn, athlete_id: int, max_pages: int = 10) -> int:
             if usage and limit and int(usage.split(",")[0]) >= int(limit.split(",")[0]) - 5:
                 break
     return stored
+
+
+def fetch_activity(conn, athlete_id: int, activity_id: int) -> dict | None:
+    """One activity as Strava has it now, or None if it no longer exists (deleted)."""
+    token = valid_access_token(conn, athlete_id)
+    resp = httpx.get(f"{config.STRAVA_API}/activities/{activity_id}",
+                     headers={"Authorization": f"Bearer {token}"}, timeout=10.0)
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    return resp.json()
+
+
+def still_authorized(conn, athlete_id: int) -> bool:
+    """False if Strava rejects this athlete's tokens, i.e. they revoked access."""
+    try:
+        token = valid_access_token(conn, athlete_id)
+        resp = httpx.get(f"{config.STRAVA_API}/athlete",
+                         headers={"Authorization": f"Bearer {token}"}, timeout=10.0)
+    except httpx.HTTPStatusError as e:  # the token refresh itself was refused
+        return e.response.status_code not in (400, 401)
+    return resp.status_code != 401

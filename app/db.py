@@ -62,7 +62,8 @@ def upsert_activity(conn, a: dict) -> None:
                    :start_lat, :start_lng, :polyline, :start_date)
            ON CONFLICT(id) DO UPDATE SET name=excluded.name, sport_type=excluded.sport_type,
                distance_m=excluded.distance_m, elev_gain_m=excluded.elev_gain_m,
-               polyline=excluded.polyline""",
+               start_lat=excluded.start_lat, start_lng=excluded.start_lng,
+               polyline=excluded.polyline, start_date=excluded.start_date""",
         a,
     )
 
@@ -73,3 +74,16 @@ def activities_for(conn, athlete_id: int, sport_types: set[str]):
         f"SELECT * FROM activities WHERE athlete_id = ? AND sport_type IN ({marks})",
         (athlete_id, *sport_types),
     ).fetchall()
+
+
+def delete_activity(conn, activity_id: int, athlete_id: int) -> bool:
+    cur = conn.execute("DELETE FROM activities WHERE id = ? AND athlete_id = ?", (activity_id, athlete_id))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def delete_athlete(conn, athlete_id: int) -> None:
+    """Remove an athlete's tokens and every activity we stored for them."""
+    conn.execute("DELETE FROM activities WHERE athlete_id = ?", (athlete_id,))
+    conn.execute("DELETE FROM athletes WHERE id = ?", (athlete_id,))
+    conn.commit()
