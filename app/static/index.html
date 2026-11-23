@@ -47,6 +47,19 @@
   .bar i { display: block; height: 100%; background: var(--accent); }
   .why { margin: 10px 0 0 36px; display: flex; flex-wrap: wrap; gap: 6px; }
   .why span { font-size: 12px; padding: 3px 8px; border-radius: 999px; background: var(--bg); color: var(--muted); }
+  details.prio { grid-column: 1 / -1; border: 1px solid var(--line); border-radius: 10px; padding: 0 12px; }
+  details.prio summary { cursor: pointer; padding: 10px 0; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; display: flex; justify-content: space-between; align-items: center; }
+  details.prio summary::marker { content: ""; }
+  details.prio summary::after { content: "▸"; transition: transform .15s; }
+  details.prio[open] summary::after { transform: rotate(90deg); }
+  .prio-list { display: grid; gap: 10px; padding-bottom: 12px; }
+  .prio-row { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: center; font-size: 13px; font-weight: 400; text-transform: none; letter-spacing: 0; }
+  .prio-row span { color: var(--ink); }
+  .prio-row output { font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 600; font-size: 12px; min-width: 3ch; text-align: right; }
+  .prio-row input[type=range] { grid-column: 1 / -1; padding: 0; border: 0; accent-color: var(--accent); }
+  .prio-row input[type=range]:focus { outline-offset: 2px; }
+  .prio-foot { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--muted); }
+  .prio-foot button { padding: 4px 8px; font-size: 12px; background: none; color: var(--accent); }
   #map { height: 100%; }
   @media (max-width: 800px) {
     main { grid-template-columns: 1fr; }
@@ -68,6 +81,10 @@
       <label>Max start (mi) <input id="maxstart" type="number" min="0.1" step="any" value="6"></label>
       <label>Latitude <input id="lat" type="number" step="any" value="47.66" required></label>
       <label>Longitude <input id="lng" type="number" step="any" value="-122.30" required></label>
+      <details class="prio" id="prio">
+        <summary>Priorities</summary>
+        <div class="prio-list" id="prio-list"></div>
+      </details>
       <div class="row">
         <button type="button" class="ghost" id="locate">Use my location</button>
         <button type="submit" class="primary" id="go">Find routes</button>
@@ -180,8 +197,61 @@ function render(routes, lat, lng) {
   if (routes.length) setActive(0);
 }
 
+// Priorities: how much each factor counts toward the score. Sliders are relative;
+// the percentage next to each is its share of the total, which is what the server uses.
+const FACTORS = [
+  { key: "distance", label: "Similar distance", def: 40 },
+  { key: "proximity", label: "Starts near me", def: 25 },
+  { key: "elevation", label: "Under my max elevation gain", def: 15 },
+  { key: "novelty", label: "Haven't done it lately", def: 20 },
+];
+const weights = Object.fromEntries(FACTORS.map((f) => [f.key, f.def]));
+try { Object.assign(weights, JSON.parse(localStorage.getItem("weights") || "{}")); } catch {}
+
+function buildPriorities() {
+  const list = $("prio-list");
+  list.innerHTML = FACTORS.map((f) => `
+    <label class="prio-row">
+      <span>${f.label}</span><output id="share-${f.key}"></output>
+      <input type="range" id="w-${f.key}" min="0" max="100" step="5" value="${weights[f.key]}" aria-label="${f.label}">
+    </label>`).join("") + `
+    <div class="prio-foot"><span id="prio-note"></span><button type="button" id="prio-reset">Reset</button></div>`;
+  FACTORS.forEach((f) => $(`w-${f.key}`).addEventListener("input", (e) => {
+    weights[f.key] = +e.target.value;
+    onWeightsChanged();
+  }));
+  $("prio-reset").addEventListener("click", () => {
+    FACTORS.forEach((f) => { weights[f.key] = f.def; $(`w-${f.key}`).value = f.def; });
+    onWeightsChanged();
+  });
+  showShares();
+}
+
+function showShares() {
+  const total = FACTORS.reduce((t, f) => t + weights[f.key], 0);
+  FACTORS.forEach((f) => { $(`share-${f.key}`).textContent = total ? `${Math.round(weights[f.key] / total * 100)}%` : "–"; });
+  $("prio-note").textContent = total ? "" : "Turn at least one up";
+}
+
+let researchTimer = null;
+function onWeightsChanged() {
+  showShares();
+  try { localStorage.setItem("weights", JSON.stringify(weights)); } catch {}
+  // Re-rank live once there are results on screen.
+  if ($("results").children.length && FACTORS.some((f) => weights[f.key] > 0)) {
+    clearTimeout(researchTimer);
+    researchTimer = setTimeout(() => $("form").requestSubmit(), 250);
+  }
+}
+buildPriorities();
+
 async function search(e) {
   e.preventDefault();
+  if (!FACTORS.some((f) => weights[f.key] > 0)) {
+    $("prio").open = true;
+    $("status").textContent = "Turn at least one priority above 0.";
+    return;
+  }
   const id = $("athlete").value.trim();
   const lat = parseFloat($("lat").value), lng = parseFloat($("lng").value);
   try { localStorage.setItem("athleteId", id); } catch {}
@@ -193,6 +263,7 @@ async function search(e) {
     include_polyline: "true", limit: "8",
   });
   if ($("elev").value) params.set("max_elev_m", $("elev").value * M_PER_FT);
+  FACTORS.forEach((f) => params.set(`w_${f.key}`, weights[f.key]));
 
   $("go").disabled = true;
   $("status").textContent = "Finding routes…";
@@ -239,6 +310,12 @@ try { const saved = localStorage.getItem("athleteId"); if (saved) $("athlete").v
 const q = new URLSearchParams(location.search);
 const fields = { athlete: "athlete", distance: "distance", sport: "sport", lat: "lat", lng: "lng", elev: "elev", maxstart: "maxstart" };
 for (const [param, id] of Object.entries(fields)) if (q.has(param)) $(id).value = q.get(param);
+// ...and w_distance=60&w_novelty=0 etc. set the priorities.
+FACTORS.forEach((f) => {
+  const v = parseFloat(q.get(`w_${f.key}`));
+  if (v >= 0 && v <= 100) { weights[f.key] = v; $(`w-${f.key}`).value = v; }
+});
+showShares();
 if (q.has("athlete")) $("form").requestSubmit();
 </script>
 </body>

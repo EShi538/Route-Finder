@@ -11,7 +11,22 @@ SPORTS = {
     "walk": {"Walk", "Hike"},
 }
 
-WEIGHTS = {"distance": 0.40, "proximity": 0.25, "elevation": 0.15, "novelty": 0.20}
+# Default importance of each factor. Callers can override any of them; weights are
+# relative (only their ratio matters) and are normalised to sum to 1 before scoring.
+WEIGHTS = {"distance": 40, "proximity": 25, "elevation": 15, "novelty": 20}
+
+
+def normalize_weights(overrides: dict[str, float | None] | None = None) -> dict[str, float]:
+    """Merge overrides into the defaults and scale so the weights sum to 1."""
+    w = {**WEIGHTS, **{k: v for k, v in (overrides or {}).items() if v is not None}}
+    if set(w) != set(WEIGHTS):
+        raise ValueError(f"unknown factor(s): {', '.join(sorted(set(w) - set(WEIGHTS)))}")
+    if any(v < 0 for v in w.values()):
+        raise ValueError("weights can't be negative")
+    total = sum(w.values())
+    if total <= 0:
+        raise ValueError("at least one factor needs a weight above 0")
+    return {k: v / total for k, v in w.items()}
 
 DISTANCE_TOLERANCE = 0.25   # a route 25% off the target distance scores 0 on distance fit
 SHAPE_DIST_PCT = 0.25       # only shape-compare activities within 25% of each other's distance
@@ -166,8 +181,12 @@ def recommend(
     limit: int = 5,
     now: datetime | None = None,
     units: str = "metric",
+    weights: dict[str, float | None] | None = None,
 ) -> list[Recommendation]:
+    """Rank candidates. Distance and start proximity also act as filters: a route too
+    far off the target distance or too far away is dropped even if its weight is 0."""
     now = now or datetime.now(timezone.utc)
+    w = normalize_weights(weights)
     u = Units(units)
     results = []
     for c in candidates:
@@ -178,8 +197,8 @@ def recommend(
         if d == 0 or p == 0:  # too long/short or too far away: not a candidate at all
             continue
         e, n = elevation_fit(c.elev_gain_m, max_elev_m), novelty(c.last_done, now)
-        score = (WEIGHTS["distance"] * d + WEIGHTS["proximity"] * p
-                 + WEIGHTS["elevation"] * e + WEIGHTS["novelty"] * n)
+        score = (w["distance"] * d + w["proximity"] * p
+                 + w["elevation"] * e + w["novelty"] * n)
 
         shown_km = round(km_away / u.round_km) * u.round_km
         why = [f"{u.dist(c.distance_km)} vs. {u.target(target_km)} target",

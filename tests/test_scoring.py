@@ -88,3 +88,40 @@ def test_recommend_imperial_wording():
     assert metric.why[0] == "40.2 km vs. 40.2 km target"
     # Ranking is unchanged; only the start distance is rounded in the shown unit.
     assert imperial.score == metric.score
+
+
+def test_normalize_weights_defaults_and_overrides():
+    w = scoring.normalize_weights()
+    assert sum(w.values()) == pytest.approx(1)
+    assert w["distance"] == pytest.approx(0.40)
+    w = scoring.normalize_weights({"distance": 0, "proximity": 0, "elevation": 0, "novelty": 5})
+    assert w == {"distance": 0, "proximity": 0, "elevation": 0, "novelty": 1}
+    assert scoring.normalize_weights({"novelty": None}) == scoring.normalize_weights()
+
+
+@pytest.mark.parametrize("bad", [
+    {"distance": 0, "proximity": 0, "elevation": 0, "novelty": 0},
+    {"distance": -1},
+    {"vibes": 10},
+])
+def test_normalize_weights_rejects_bad_input(bad):
+    with pytest.raises(ValueError):
+        scoring.normalize_weights(bad)
+
+
+def test_weights_change_ranking():
+    cands = scoring.group_routes([
+        row(1, 40, days_ago=1),     # exact distance, done yesterday
+        row(2, 44, days_ago=90),    # a bit long, not done in months
+    ])
+    distance_first = scoring.recommend(cands, *HOME, target_km=40, now=NOW,
+                                       weights={"distance": 90, "novelty": 10})
+    novelty_first = scoring.recommend(cands, *HOME, target_km=40, now=NOW,
+                                      weights={"distance": 10, "novelty": 90})
+    assert [r.candidate.activity_id for r in distance_first] == [1, 2]
+    assert [r.candidate.activity_id for r in novelty_first] == [2, 1]
+
+
+def test_zero_weight_still_filters():
+    cands = scoring.group_routes([row(1, 80)])  # far too long
+    assert scoring.recommend(cands, *HOME, target_km=40, now=NOW, weights={"distance": 0}) == []

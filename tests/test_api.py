@@ -72,3 +72,15 @@ def test_recommendations_imperial_units(client):
     assert "mi" in body[0]["why"][0]
     params["units"] = "furlongs"
     assert client.get("/athletes/42/recommendations", params=params).status_code == 422
+
+
+def test_recommendations_custom_weights(client):
+    base = {"lat": 47.66, "lng": -122.30, "distance_km": 40}
+    default = client.get("/athletes/42/recommendations", params=base).json()[0]["score"]
+    novelty_only = client.get("/athletes/42/recommendations", params={
+        **base, "w_distance": 0, "w_proximity": 0, "w_elevation": 0, "w_novelty": 100}).json()[0]["score"]
+    assert novelty_only != default
+    all_zero = {**base, "w_distance": 0, "w_proximity": 0, "w_elevation": 0, "w_novelty": 0}
+    resp = client.get("/athletes/42/recommendations", params=all_zero)
+    assert resp.status_code == 422 and "at least one" in resp.json()["detail"]
+    assert client.get("/athletes/42/recommendations", params={**base, "w_novelty": -1}).status_code == 422

@@ -23,6 +23,8 @@ Strava ──OAuth 2.0──▶ FastAPI service ──▶ SQLite
 
 Routes that are too long, too short or too far away are filtered out before ranking.
 
+The weights are defaults. Pass `w_distance`, `w_proximity`, `w_elevation` and `w_novelty` (0–100 each) to change how much each factor counts. Only their ratio matters: they are scaled to sum to 1, so `w_distance=60&w_novelty=60` makes those two equally important. Any you leave out keep their default (40/25/15/20), and setting them all to 0 is rejected. A weight of 0 only stops a factor from affecting the ranking: routes too far off the target distance or start are still filtered out. On the web page these are the sliders under **Priorities**.
+
 5. **Privacy:** route start and end points are usually someone's home, so they never leave the server. Every returned `polyline` has 300–600 m cut off each end (the amount varies per activity but stays the same between requests), and routes too short to trim come back with no path. `start_km_away` and the proximity score are measured from the first point that is still visible, and the distance is rounded to 0.5 km (0.25 mi with `units=imperial`). Activities with no GPS path are measured from a start snapped to a ~500 m grid.
 
 ## Endpoints
@@ -31,7 +33,7 @@ Routes that are too long, too short or too far away are filtered out before rank
 | GET | `/auth/login` | Start the Strava OAuth flow |
 | GET | `/auth/callback` | OAuth redirect target; stores tokens |
 | POST | `/athletes/{id}/sync` | Import activities from Strava |
-| GET | `/athletes/{id}/recommendations` | Ranked routes. Params: `lat`, `lng`, `distance_km`, `sport` (ride/run/walk), `max_elev_m`, `max_start_km`, `limit`, `units` (metric/imperial: wording of `why` only; numeric fields are always km and m) |
+| GET | `/athletes/{id}/recommendations` | Ranked routes. Params: `lat`, `lng`, `distance_km`, `sport` (ride/run/walk), `max_elev_m`, `max_start_km`, `limit`, `w_distance`/`w_proximity`/`w_elevation`/`w_novelty` (relative weights, 0–100), `units` (metric/imperial: wording of `why` only; numeric fields are always km and m) |
 | GET | `/health` | Health check |
 
 Example:
