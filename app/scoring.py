@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from app.geo import decode, haversine_km, is_loop
+from app.geo import Shape, decode, haversine_km, is_loop, same_shape
 
 SPORTS = {
     "ride": {"Ride", "GravelRide", "MountainBikeRide", "EBikeRide"},
@@ -14,8 +14,9 @@ SPORTS = {
 WEIGHTS = {"distance": 0.40, "proximity": 0.25, "elevation": 0.15, "novelty": 0.20}
 
 DISTANCE_TOLERANCE = 0.25   # a route 25% off the target distance scores 0 on distance fit
-SAME_ROUTE_START_KM = 0.3   # two activities are "the same route" if they start this close...
-SAME_ROUTE_DIST_PCT = 0.05  # ...and their distances differ by less than 5%
+SHAPE_DIST_PCT = 0.25       # only shape-compare activities within 25% of each other's distance
+SAME_ROUTE_START_KM = 0.3   # fallback when an activity has no GPS path: same start...
+SAME_ROUTE_DIST_PCT = 0.05  # ...and distance within 5%
 NOVELTY_FULL_DAYS = 42      # not done in 6+ weeks = full novelty bonus
 
 
@@ -31,6 +32,7 @@ class Candidate:
     polyline: str | None
     last_done: datetime
     times_done: int = 1
+    shape: Shape | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass
@@ -46,18 +48,35 @@ def _parse_date(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def _same_route(c: Candidate, row, dist_km: float, shape: Shape | None) -> bool:
+    if c.sport_type != row["sport_type"]:
+        return False
+    dist_diff = abs(c.distance_km - dist_km) / max(c.distance_km, 1e-9)
+    if c.shape and shape and c.shape.cells and shape.cells:
+        # Cheap distance check first, then the real test: do the GPS paths overlap?
+        return dist_diff < SHAPE_DIST_PCT and same_shape(c.shape, shape)
+    # No GPS path on one side: fall back to "same start point and same distance".
+    return (dist_diff < SAME_ROUTE_DIST_PCT
+            and haversine_km(c.start_lat, c.start_lng, row["start_lat"], row["start_lng"]) <= SAME_ROUTE_START_KM)
+
+
 def group_routes(rows) -> list[Candidate]:
-    """Collapse repeated activities on the same route into one candidate (keeps the most recent)."""
+    """Collapse activities that followed the same route into one candidate.
+
+    Activities are processed newest first, so each group is represented by its
+    most recent activity (name, link and path) and counts how many times it was done.
+    """
+    rows = sorted(rows, key=lambda r: r["start_date"], reverse=True)
+    if not rows:
+        return []
+    ref_lat = rows[0]["start_lat"]  # one projection for the whole batch so shapes are comparable
+
     candidates: list[Candidate] = []
-    for r in sorted(rows, key=lambda r: r["start_date"], reverse=True):
+    for r in rows:
         dist_km = r["distance_m"] / 1000
-        match = next(
-            (c for c in candidates
-             if c.sport_type == r["sport_type"]
-             and haversine_km(c.start_lat, c.start_lng, r["start_lat"], r["start_lng"]) <= SAME_ROUTE_START_KM
-             and abs(c.distance_km - dist_km) / max(c.distance_km, 1e-9) < SAME_ROUTE_DIST_PCT),
-            None,
-        )
+        points = decode(r["polyline"])
+        shape = Shape(points, ref_lat) if points else None
+        match = next((c for c in candidates if _same_route(c, r, dist_km, shape)), None)
         if match:
             match.times_done += 1
             continue
@@ -66,6 +85,7 @@ def group_routes(rows) -> list[Candidate]:
             distance_km=dist_km, elev_gain_m=r["elev_gain_m"],
             start_lat=r["start_lat"], start_lng=r["start_lng"],
             polyline=r["polyline"], last_done=_parse_date(r["start_date"]),
+            shape=shape,
         ))
     return candidates
 

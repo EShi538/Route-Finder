@@ -22,6 +22,18 @@ app = FastAPI(title="Strava Route Recommendation API", lifespan=lifespan)
 
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# Grouping activities into routes compares GPS shapes and takes ~0.5-1 s for ~1000
+# activities, but the result only changes when activities are added. Cache it, keyed
+# on what would change it: the athlete, sport, and the set of activities (count + newest id).
+_route_cache: dict[tuple, list] = {}
+
+
+def routes_for(athlete_id: int, sport: str, rows) -> list:
+    key = (athlete_id, sport, len(rows), max((r["id"] for r in rows), default=0))
+    if key not in _route_cache:
+        _route_cache[key] = scoring.group_routes(rows)
+    return _route_cache[key]
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -91,7 +103,7 @@ def recommendations(
     rows = db.activities_for(conn, athlete_id, scoring.SPORTS[sport])
     conn.close()
 
-    recs = scoring.recommend(scoring.group_routes(rows), lat, lng, distance_km,
+    recs = scoring.recommend(routes_for(athlete_id, sport, rows), lat, lng, distance_km,
                              max_elev_m=max_elev_m, max_start_km=max_start_km, limit=limit)
     return [
         {
